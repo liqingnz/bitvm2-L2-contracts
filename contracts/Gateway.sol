@@ -2,7 +2,6 @@
 pragma solidity ^0.8.27;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 
 import {IBitcoinSPV} from "./interfaces/IBitcoinSPV.sol";
 import {Converter} from "./libraries/Converter.sol";
@@ -102,7 +101,7 @@ contract GatewayUpgradeable {
         BitvmTxParser.BitcoinTx calldata rawPeginTx,
         uint256 height,
         bytes32[] calldata proof,
-        bytes32 leaf
+        uint256 index
     ) external onlyRelayer returns (uint256 peginIndex) {
         (
             bytes32 peginTxid,
@@ -118,7 +117,12 @@ contract GatewayUpgradeable {
 
         // validate pegin tx
         require(
-            MerkleProof.verify(proof, bitcoinSPV.blockHash(height), leaf),
+            verifyMerkleProof(
+                bitcoinSPV.blockHash(height),
+                proof,
+                peginTxid,
+                index
+            ),
             "unable to verify"
         );
 
@@ -220,7 +224,7 @@ contract GatewayUpgradeable {
         BitvmTxParser.BitcoinTx calldata rawKickoffTx,
         uint256 height,
         bytes32[] calldata proof,
-        bytes32 leaf
+        uint256 index
     ) external onlyRelayerOrOperator(withdrawIndex) {
         WithdrawData storage withdrawData = withdrawDataMap[withdrawIndex];
         uint256 peginIndex = withdrawData.peginIndex;
@@ -234,10 +238,6 @@ contract GatewayUpgradeable {
             withdrawData.status == WithdrawStatus.Initialized,
             "invalid withdraw index: not at init stage"
         );
-        require(
-            MerkleProof.verify(proof, bitcoinSPV.blockHash(height), leaf),
-            "unable to verify"
-        );
 
         OperatorData storage operatorData = operatorDataMap[peginIndex][
             operatorIndex
@@ -246,6 +246,15 @@ contract GatewayUpgradeable {
         require(
             kickoffTxid == operatorData.kickoffTxid,
             "kickoff txid mismatch"
+        );
+        require(
+            verifyMerkleProof(
+                bitcoinSPV.blockHash(height),
+                proof,
+                kickoffTxid,
+                index
+            ),
+            "unable to verify"
         );
 
         // once kickoff is braodcasted , operator will not be able to cancel withdrawal
@@ -260,7 +269,7 @@ contract GatewayUpgradeable {
         BitvmTxParser.BitcoinTx calldata rawTake1Tx,
         uint256 height,
         bytes32[] calldata proof,
-        bytes32 leaf
+        uint256 index
     ) external onlyRelayerOrOperator(withdrawIndex) {
         WithdrawData storage withdrawData = withdrawDataMap[withdrawIndex];
         uint256 peginIndex = withdrawData.peginIndex;
@@ -274,10 +283,6 @@ contract GatewayUpgradeable {
             withdrawData.status == WithdrawStatus.Processing,
             "invalid withdraw index: not at processing stage"
         );
-        require(
-            MerkleProof.verify(proof, bitcoinSPV.blockHash(height), leaf),
-            "unable to verify"
-        );
 
         OperatorData storage operatorData = operatorDataMap[peginIndex][
             operatorIndex
@@ -286,6 +291,15 @@ contract GatewayUpgradeable {
         require(
             BitvmTxParser.parseTake1Tx(rawTake1Tx) == operatorData.take1Txid,
             "take1 txid mismatch"
+        );
+        require(
+            verifyMerkleProof(
+                bitcoinSPV.blockHash(height),
+                proof,
+                take1Txid,
+                index
+            ),
+            "unable to verify"
         );
 
         peginData.status = PeginStatus.Claimed;
@@ -297,7 +311,7 @@ contract GatewayUpgradeable {
         BitvmTxParser.BitcoinTx calldata rawTake2Tx,
         uint256 height,
         bytes32[] calldata proof,
-        bytes32 leaf
+        uint256 index
     ) external onlyRelayerOrOperator(withdrawIndex) {
         WithdrawData storage withdrawData = withdrawDataMap[withdrawIndex];
         uint256 peginIndex = withdrawData.peginIndex;
@@ -311,16 +325,21 @@ contract GatewayUpgradeable {
             withdrawData.status == WithdrawStatus.Processing,
             "invalid withdraw index: not at processing stage"
         );
-        require(
-            MerkleProof.verify(proof, bitcoinSPV.blockHash(height), leaf),
-            "unable to verify"
-        );
 
         OperatorData storage operatorData = operatorDataMap[peginIndex][
             operatorIndex
         ];
         bytes32 take2Txid = BitvmTxParser.parseTake2Tx(rawTake2Tx);
         require(take2Txid == operatorData.take2Txid, "take2 txid mismatch");
+        require(
+            verifyMerkleProof(
+                bitcoinSPV.blockHash(height),
+                proof,
+                take2Txid,
+                index
+            ),
+            "unable to verify"
+        );
 
         peginData.status = PeginStatus.Claimed;
         withdrawData.status = WithdrawStatus.Complete;
@@ -331,7 +350,7 @@ contract GatewayUpgradeable {
         BitvmTxParser.BitcoinTx calldata rawDisproveTx,
         uint256 height,
         bytes32[] calldata proof,
-        bytes32 leaf
+        uint256 index
     ) external onlyRelayerOrOperator(withdrawIndex) {
         WithdrawData storage withdrawData = withdrawDataMap[withdrawIndex];
         uint256 peginIndex = withdrawData.peginIndex;
@@ -344,10 +363,6 @@ contract GatewayUpgradeable {
         require(
             withdrawData.status == WithdrawStatus.Processing,
             "invalid withdraw index: not at processing stage"
-        );
-        require(
-            MerkleProof.verify(proof, bitcoinSPV.blockHash(height), leaf),
-            "unable to verify"
         );
 
         OperatorData storage operatorData = operatorDataMap[peginIndex][
@@ -359,9 +374,49 @@ contract GatewayUpgradeable {
             assertFinalTxid == operatorData.assertFinalTxid,
             "disprove txid mismatch"
         );
+        require(
+            verifyMerkleProof(
+                bitcoinSPV.blockHash(height),
+                proof,
+                assertFinalTxid,
+                index
+            ),
+            "unable to verify"
+        );
 
         peginData.status = PeginStatus.Withdrawbale;
         withdrawData.status = WithdrawStatus.Disproved;
+    }
+
+    function verifyMerkleProof(
+        bytes32 root,
+        bytes32[] memory proof,
+        bytes32 leaf,
+        uint256 index
+    ) public pure returns (bool) {
+        bytes32 computedHash = leaf;
+
+        for (uint256 i; i < proof.length; ++i) {
+            if (index % 2 == 0) {
+                computedHash = _doubleSha256Pair(computedHash, proof[i]);
+            } else {
+                computedHash = _doubleSha256Pair(proof[i], computedHash);
+            }
+            index /= 2;
+        }
+
+        return computedHash == root;
+    }
+
+    function _doubleSha256Pair(
+        bytes32 txA,
+        bytes32 txB
+    ) internal pure returns (bytes32) {
+        // concatenate and do sha256 once
+        bytes32 hash = sha256(abi.encodePacked(txA, txB));
+
+        // do sha256 once again
+        return sha256(abi.encodePacked(hash));
     }
 
     /*
