@@ -33,12 +33,12 @@ library BitvmTxParser {
         uint nextTxinOffset = scriptpubkeysize + offset;
 
         // depositorAddress is op_return data of txout[1]
-        // Bitvm pegin OP_RETURN script (22-bytes):
-        // OP_RETURN OP_PUSHBYTES20 {depositorAddress(20-bytes)}
+        // Bitvm pegin OP_RETURN script (30-bytes):
+        // OP_RETURN OP_PUSHBYTES28 {magic-bytes(8-bytes)} {depositorAddress(20-bytes)}
         (uint opReturnScriptSize, uint opReturnScriptOffset) = parseCompactSize(txouts, nextTxinOffset + 8);
         bytes2 firstTwoOpcode = bytes2(memLoad(txouts, opReturnScriptOffset));
-        require(opReturnScriptSize == 22 && firstTwoOpcode == 0x6a14, "invalid OP_RETURN script");
-        depositorAddress = address(bytes20(memLoad(txouts, opReturnScriptOffset + 2)));
+        require(opReturnScriptSize == 30 && firstTwoOpcode == 0x6a1c, "invalid OP_RETURN script");
+        depositorAddress = address(bytes20(memLoad(txouts, opReturnScriptOffset + 10)));
         peginAmountSats = reverseUint64(peginAmountSatsRev);
     }
 
