@@ -29,20 +29,20 @@ contract GatewayUpgradeable {
         bytes32 peginTxid;
         PeginStatus status;
         uint64 peginAmount;
-        uint64 operatorNum;
     }
 
     struct WithdrawData {
         bytes32 peginTxid;
+        address operatorAddress;
         WithdrawStatus status;
-        uint256 peginIndex;
-        uint256 operatorIndex;
+        bytes16 instanceId;
         uint256 lockAmount;
     }
 
     struct OperatorData {
         uint64 stakeAmount;
-        address operatorAddress;
+        bytes1 operatorPubkeyPrefix;
+        bytes32 operatorPubkey;
         bytes32 peginTxid;
         bytes32 preKickoffTxid;
         bytes32 kickoffTxid;
@@ -57,13 +57,16 @@ contract GatewayUpgradeable {
     IBitcoinSPV public immutable bitcoinSPV;
     address public immutable relayer;
 
-    uint256 public globalPeginIndex;
-    uint256 public globalWithdrawIndex;
     mapping(bytes32 => bool) public peginTxUsed;
-    mapping(uint256 => mapping(uint256 => bool)) public operatorWithdrawn;
-    mapping(uint256 => PeginData) public peginDataMap; // start from index 1
-    mapping(uint256 => mapping(uint256 => OperatorData)) public operatorDataMap;
-    mapping(uint256 => WithdrawData) public withdrawDataMap;
+    mapping(bytes16 instanceId => PeginData) public peginDataMap;
+
+    mapping(bytes16 graphId => bool) public operatorWithdrawn;
+    mapping(bytes16 graphId => OperatorData) public operatorDataMap;
+    mapping(bytes16 graphId => WithdrawData) public withdrawDataMap;
+
+    bytes16[] public instanceIds;
+    mapping(bytes16 instanceId => bytes16[] graphIds)
+        public instanceIdToGraphIds;
 
     constructor(IERC20 _pegBTC, IBitcoinSPV _bitcoinSPV, address _relayer) {
         pegBTC = _pegBTC;
@@ -76,39 +79,144 @@ contract GatewayUpgradeable {
         _;
     }
 
-    modifier onlyOperator(uint256 peginIndex, uint256 operatorIndex) {
+    modifier onlyOperator(bytes16 graphId) {
         require(
-            operatorDataMap[peginIndex][operatorIndex].operatorAddress ==
-                msg.sender,
+            withdrawDataMap[graphId].operatorAddress == msg.sender,
             "not operator!"
         );
         _;
     }
 
-    modifier onlyRelayerOrOperator(uint256 withdrawIndex) {
+    modifier onlyRelayerOrOperator(bytes16 graphId) {
         require(
             msg.sender == relayer ||
-                operatorDataMap[withdrawDataMap[withdrawIndex].peginIndex][
-                    withdrawDataMap[withdrawIndex].operatorIndex
-                ].operatorAddress ==
-                msg.sender,
+                withdrawDataMap[graphId].operatorAddress == msg.sender,
             "not relayer or operator!"
         );
         _;
     }
 
+    function getInstanceIdsByPubKey(
+        bytes32 operatorPubkey
+    )
+        external
+        view
+        returns (bytes16[] memory retInstanceIds, bytes16[] memory retGraphIds)
+    {
+        uint256 count;
+        // First pass to count matching entries
+        for (uint256 i = 0; i < instanceIds.length; ++i) {
+            bytes16 instanceId = instanceIds[i];
+            bytes16[] memory graphIds = instanceIdToGraphIds[instanceId];
+            for (uint256 j = 0; j < graphIds.length; ++j) {
+                bytes16 graphId = graphIds[j];
+                if (
+                    operatorDataMap[graphId].operatorPubkey == operatorPubkey &&
+                    withdrawDataMap[graphId].status ==
+                    WithdrawStatus.Initialized
+                ) {
+                    count++;
+                }
+            }
+        }
+
+        // Second pass to populate return arrays
+        retInstanceIds = new bytes16[](count);
+        retGraphIds = new bytes16[](count);
+        uint256 index;
+        for (uint256 i = 0; i < instanceIds.length; ++i) {
+            bytes16 instanceId = instanceIds[i];
+            bytes16[] memory graphIds = instanceIdToGraphIds[instanceId];
+            for (uint256 j = 0; j < graphIds.length; ++j) {
+                bytes16 graphId = graphIds[j];
+                if (
+                    operatorDataMap[graphId].operatorPubkey == operatorPubkey &&
+                    withdrawDataMap[graphId].status ==
+                    WithdrawStatus.Initialized
+                ) {
+                    retInstanceIds[index] = instanceId;
+                    retGraphIds[index] = graphId;
+                    index++;
+                }
+            }
+        }
+    }
+
+    function getWithdrawableInstances()
+        external
+        view
+        returns (
+            bytes16[] memory retInstanceIds,
+            bytes16[] memory retGraphIds,
+            uint64[] memory retPeginAmounts
+        )
+    {
+        uint256 count;
+
+        // First pass to count
+        for (uint256 i = 0; i < instanceIds.length; ++i) {
+            bytes16 instanceId = instanceIds[i];
+            bytes16[] memory graphIds = instanceIdToGraphIds[instanceId];
+            for (uint256 j = 0; j < graphIds.length; ++j) {
+                bytes16 graphId = graphIds[j];
+                WithdrawData storage withdrawData = withdrawDataMap[graphId];
+                PeginData storage peginData = peginDataMap[instanceId];
+                if (
+                    (withdrawData.status == WithdrawStatus.None ||
+                        withdrawData.status == WithdrawStatus.Canceled) &&
+                    peginData.status == PeginStatus.Withdrawbale &&
+                    !operatorWithdrawn[graphId]
+                ) {
+                    count++;
+                }
+            }
+        }
+
+        // Second pass to collect
+        retInstanceIds = new bytes16[](count);
+        retGraphIds = new bytes16[](count);
+        retPeginAmounts = new uint64[](count);
+        uint256 index;
+
+        for (uint256 i = 0; i < instanceIds.length; ++i) {
+            bytes16 instanceId = instanceIds[i];
+            bytes16[] memory graphIds = instanceIdToGraphIds[instanceId];
+            for (uint256 j = 0; j < graphIds.length; ++j) {
+                bytes16 graphId = graphIds[j];
+                WithdrawData storage withdrawData = withdrawDataMap[graphId];
+                PeginData storage peginData = peginDataMap[instanceId];
+                if (
+                    (withdrawData.status == WithdrawStatus.None ||
+                        withdrawData.status == WithdrawStatus.Canceled) &&
+                    peginData.status == PeginStatus.Withdrawbale &&
+                    !operatorWithdrawn[graphId]
+                ) {
+                    retInstanceIds[index] = instanceId;
+                    retGraphIds[index] = graphId;
+                    retPeginAmounts[index] = peginData.peginAmount;
+                    index++;
+                }
+            }
+        }
+    }
+
     function postPeginData(
+        bytes16 instanceId,
         BitvmTxParser.BitcoinTx calldata rawPeginTx,
         uint256 height,
         bytes32[] calldata proof,
         uint256 index
-    ) external onlyRelayer returns (uint256 peginIndex) {
+    ) external onlyRelayer {
         (
             bytes32 peginTxid,
             uint64 peginAmountSats,
             address depositorAddress
         ) = BitvmTxParser.parsePegin(rawPeginTx);
 
+        require(
+            peginDataMap[instanceId].peginTxid == 0,
+            "pegin tx already posted"
+        );
         // double spend check
         require(
             !peginTxUsed[peginTxid],
@@ -128,24 +236,23 @@ contract GatewayUpgradeable {
 
         // record pegin tx data
         peginTxUsed[peginTxid] = true;
-        peginDataMap[++globalPeginIndex] = PeginData({
+        peginDataMap[instanceId] = PeginData({
             peginTxid: peginTxid,
             peginAmount: peginAmountSats,
-            status: PeginStatus.Withdrawbale,
-            operatorNum: 0
+            status: PeginStatus.Withdrawbale
         });
+        instanceIds.push(instanceId);
 
         // mint / send pegBTC to user
         pegBTC.transfer(depositorAddress, peginAmountSats);
-
-        return globalPeginIndex;
     }
 
     function postOperatorData(
-        uint256 PeginIndex,
+        bytes16 instanceId,
+        bytes16 graphId,
         OperatorData calldata operatorData
-    ) public onlyRelayer returns (uint256 operatorIndex) {
-        PeginData storage peginData = peginDataMap[PeginIndex];
+    ) public onlyRelayer {
+        PeginData storage peginData = peginDataMap[instanceId];
         require(
             operatorData.peginTxid == peginData.peginTxid,
             "operator data pegin txid mismatch"
@@ -154,35 +261,37 @@ contract GatewayUpgradeable {
             BitvmPolicy.isValidStakeAmount(operatorData.stakeAmount),
             "insufficient stake amount"
         );
-        operatorIndex = peginData.operatorNum++;
-        operatorDataMap[PeginIndex][operatorIndex] = operatorData;
+        operatorDataMap[graphId] = operatorData;
     }
 
     function postOperatorDataBatch(
-        uint256 PeginIndex,
+        bytes16 instanceId,
+        bytes16[] calldata graphIds,
         OperatorData[] calldata operatorData
-    ) external onlyRelayer returns (uint[] memory operatorIndex) {
-        for (uint256 i; i < operatorData.length; ++i) {
-            operatorIndex[i] = postOperatorData(PeginIndex, operatorData[i]);
+    ) external onlyRelayer {
+        require(
+            graphIds.length == operatorData.length,
+            "inputs length mismatch"
+        );
+        for (uint256 i; i < graphIds.length; ++i) {
+            postOperatorData(instanceId, graphIds[i], operatorData[i]);
         }
     }
 
-    function initWithdraw(
-        uint256 peginIndex,
-        uint256 operatorIndex
-    )
-        external
-        onlyOperator(peginIndex, operatorIndex)
-        returns (uint256 withdrawIndex)
-    {
-        PeginData storage peginData = peginDataMap[peginIndex];
-
+    function initWithdraw(bytes16 instanceId, bytes16 graphId) external {
+        WithdrawData storage withdrawData = withdrawDataMap[graphId];
+        require(
+            withdrawData.status == WithdrawStatus.None ||
+                withdrawData.status == WithdrawStatus.Canceled,
+            "invalid withdraw status"
+        );
+        PeginData storage peginData = peginDataMap[instanceId];
         require(
             peginData.status == PeginStatus.Withdrawbale,
             "not a withdrawable pegin tx"
         );
         require(
-            !operatorWithdrawn[peginIndex][operatorIndex],
+            !operatorWithdrawn[graphId],
             "operator already used up withdraw chance"
         );
 
@@ -193,22 +302,20 @@ contract GatewayUpgradeable {
         uint256 lockAmount = Converter.amountFromSats(peginData.peginAmount);
         pegBTC.transferFrom(msg.sender, address(this), lockAmount);
 
-        WithdrawData memory withdrawal = WithdrawData({
-            peginTxid: peginData.peginTxid,
-            status: WithdrawStatus.Initialized,
-            operatorIndex: operatorIndex,
-            peginIndex: peginIndex,
-            lockAmount: lockAmount
-        });
-        withdrawDataMap[++globalWithdrawIndex] = withdrawal;
-        return globalWithdrawIndex;
+        withdrawData.peginTxid = peginData.peginTxid;
+        withdrawData.operatorAddress = msg.sender;
+        withdrawData.status = WithdrawStatus.Initialized;
+        withdrawData.instanceId = instanceId;
+        withdrawData.lockAmount = lockAmount;
+
+        instanceIdToGraphIds[instanceId].push(graphId);
     }
 
     function cancelWithdraw(
-        uint256 withdrawIndex
-    ) external onlyRelayerOrOperator(withdrawIndex) {
-        WithdrawData storage withdrawData = withdrawDataMap[withdrawIndex];
-        PeginData storage peginData = peginDataMap[withdrawData.peginIndex];
+        bytes16 graphId
+    ) external onlyRelayerOrOperator(graphId) {
+        WithdrawData storage withdrawData = withdrawDataMap[graphId];
+        PeginData storage peginData = peginDataMap[withdrawData.instanceId];
         require(
             withdrawData.status == WithdrawStatus.Initialized,
             "invalid withdraw index: not at init stage"
@@ -220,28 +327,21 @@ contract GatewayUpgradeable {
 
     // post kickoff tx
     function proceedWithdraw(
-        uint256 withdrawIndex,
+        bytes16 graphId,
         BitvmTxParser.BitcoinTx calldata rawKickoffTx,
         uint256 height,
         bytes32[] calldata proof,
         uint256 index
-    ) external onlyRelayerOrOperator(withdrawIndex) {
-        WithdrawData storage withdrawData = withdrawDataMap[withdrawIndex];
-        uint256 peginIndex = withdrawData.peginIndex;
-        uint256 operatorIndex = withdrawData.operatorIndex;
-        PeginData storage peginData = peginDataMap[peginIndex];
-        require(
-            operatorIndex < peginData.operatorNum,
-            "operator index out of range"
-        );
+    ) external onlyRelayerOrOperator(graphId) {
+        WithdrawData storage withdrawData = withdrawDataMap[graphId];
+        bytes16 instanceId = withdrawData.instanceId;
+        PeginData storage peginData = peginDataMap[instanceId];
         require(
             withdrawData.status == WithdrawStatus.Initialized,
             "invalid withdraw index: not at init stage"
         );
 
-        OperatorData storage operatorData = operatorDataMap[peginIndex][
-            operatorIndex
-        ];
+        OperatorData storage operatorData = operatorDataMap[graphId];
         bytes32 kickoffTxid = BitvmTxParser.parseKickoffTx(rawKickoffTx);
         require(
             kickoffTxid == operatorData.kickoffTxid,
@@ -259,34 +359,27 @@ contract GatewayUpgradeable {
 
         // once kickoff is braodcasted , operator will not be able to cancel withdrawal
         withdrawData.status = WithdrawStatus.Processing;
-        operatorWithdrawn[peginIndex][operatorIndex] = true;
+        operatorWithdrawn[graphId] = true;
 
         // TODO: burn pegBTC ?
     }
 
     function finishWithdrawHappyPath(
-        uint256 withdrawIndex,
+        bytes16 graphId,
         BitvmTxParser.BitcoinTx calldata rawTake1Tx,
         uint256 height,
         bytes32[] calldata proof,
         uint256 index
-    ) external onlyRelayerOrOperator(withdrawIndex) {
-        WithdrawData storage withdrawData = withdrawDataMap[withdrawIndex];
-        uint256 peginIndex = withdrawData.peginIndex;
-        uint256 operatorIndex = withdrawData.operatorIndex;
-        PeginData storage peginData = peginDataMap[peginIndex];
-        require(
-            operatorIndex < peginData.operatorNum,
-            "operator index out of range"
-        );
+    ) external onlyRelayerOrOperator(graphId) {
+        WithdrawData storage withdrawData = withdrawDataMap[graphId];
+        bytes16 instanceId = withdrawData.instanceId;
+        PeginData storage peginData = peginDataMap[instanceId];
         require(
             withdrawData.status == WithdrawStatus.Processing,
             "invalid withdraw index: not at processing stage"
         );
 
-        OperatorData storage operatorData = operatorDataMap[peginIndex][
-            operatorIndex
-        ];
+        OperatorData storage operatorData = operatorDataMap[graphId];
         bytes32 take1Txid = BitvmTxParser.parseTake1Tx(rawTake1Tx);
         require(
             BitvmTxParser.parseTake1Tx(rawTake1Tx) == operatorData.take1Txid,
@@ -307,28 +400,21 @@ contract GatewayUpgradeable {
     }
 
     function finishWithdrawUnhappyPath(
-        uint256 withdrawIndex,
+        bytes16 graphId,
         BitvmTxParser.BitcoinTx calldata rawTake2Tx,
         uint256 height,
         bytes32[] calldata proof,
         uint256 index
-    ) external onlyRelayerOrOperator(withdrawIndex) {
-        WithdrawData storage withdrawData = withdrawDataMap[withdrawIndex];
-        uint256 peginIndex = withdrawData.peginIndex;
-        uint256 operatorIndex = withdrawData.operatorIndex;
-        PeginData storage peginData = peginDataMap[peginIndex];
-        require(
-            operatorIndex < peginData.operatorNum,
-            "operator index out of range"
-        );
+    ) external onlyRelayerOrOperator(graphId) {
+        WithdrawData storage withdrawData = withdrawDataMap[graphId];
+        bytes16 instanceId = withdrawData.instanceId;
+        PeginData storage peginData = peginDataMap[instanceId];
         require(
             withdrawData.status == WithdrawStatus.Processing,
             "invalid withdraw index: not at processing stage"
         );
 
-        OperatorData storage operatorData = operatorDataMap[peginIndex][
-            operatorIndex
-        ];
+        OperatorData storage operatorData = operatorDataMap[graphId];
         bytes32 take2Txid = BitvmTxParser.parseTake2Tx(rawTake2Tx);
         require(take2Txid == operatorData.take2Txid, "take2 txid mismatch");
         require(
@@ -346,28 +432,21 @@ contract GatewayUpgradeable {
     }
 
     function finishWithdrawDisproved(
-        uint256 withdrawIndex,
+        bytes16 graphId,
         BitvmTxParser.BitcoinTx calldata rawDisproveTx,
         uint256 height,
         bytes32[] calldata proof,
         uint256 index
-    ) external onlyRelayerOrOperator(withdrawIndex) {
-        WithdrawData storage withdrawData = withdrawDataMap[withdrawIndex];
-        uint256 peginIndex = withdrawData.peginIndex;
-        uint256 operatorIndex = withdrawData.operatorIndex;
-        PeginData storage peginData = peginDataMap[peginIndex];
-        require(
-            operatorIndex < peginData.operatorNum,
-            "operator index out of range"
-        );
+    ) external onlyRelayerOrOperator(graphId) {
+        WithdrawData storage withdrawData = withdrawDataMap[graphId];
+        bytes16 instanceId = withdrawData.instanceId;
+        PeginData storage peginData = peginDataMap[instanceId];
         require(
             withdrawData.status == WithdrawStatus.Processing,
             "invalid withdraw index: not at processing stage"
         );
 
-        OperatorData storage operatorData = operatorDataMap[peginIndex][
-            operatorIndex
-        ];
+        OperatorData storage operatorData = operatorDataMap[graphId];
         (bytes32 disproveTxid, bytes32 assertFinalTxid) = BitvmTxParser
             .parseDisproveTx(rawDisproveTx);
         require(
@@ -422,7 +501,7 @@ contract GatewayUpgradeable {
     /*
         How to check whether operator has burned pegBTC ?
         Inputs:
-            1. withdrawIndex (provided by operator when kickoff)
+            1. graphId (provided by operator when kickoff)
             2. gateway_contract_address (hardcoded when pegin)
             3. withdrawMap_layout_index (hardcoded when pegin)
             4. evm_header.status_root (already been proven somewhere else)
@@ -435,7 +514,7 @@ contract GatewayUpgradeable {
                 ); 
             2. let storage_keys = calc_storage_key(     // TODO
                     withdrawMap_layout_index,
-                    withdrawIndex,
+                    graphId,
                     [1, 2, 3] 
                 ); (see https://docs.soliditylang.org/en/v0.8.29/internals/layout_in_storage.html#mappings-and-dynamic-arrays)
             3. let leaf_storage_slots = verify_storage_merkle_proof(
