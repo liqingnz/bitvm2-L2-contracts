@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
+import {Constants} from "../Constants.sol";
+
 library BitvmTxParser {
     struct BitcoinTx {
         bytes4 version;
@@ -38,6 +40,7 @@ library BitvmTxParser {
         (uint opReturnScriptSize, uint opReturnScriptOffset) = parseCompactSize(txouts, nextTxinOffset + 8);
         bytes2 firstTwoOpcode = bytes2(memLoad(txouts, opReturnScriptOffset));
         require(opReturnScriptSize == 30 && firstTwoOpcode == 0x6a1c, "invalid OP_RETURN script");
+        require(bytes8(memLoad(txouts, opReturnScriptOffset + 2)) == Constants.magic_bytes, "magic_bytes mismatch");
         depositorAddress = address(bytes20(memLoad(txouts, opReturnScriptOffset + 10)));
         peginAmountSats = reverseUint64(peginAmountSatsRev);
     }
