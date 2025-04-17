@@ -142,7 +142,9 @@ contract GatewayUpgradeable {
         }
     }
 
-    function getWithdrawableInstances()
+    function getWithdrawableInstances(
+        bytes32 operatorPubkey
+    )
         external
         view
         returns (
@@ -162,6 +164,7 @@ contract GatewayUpgradeable {
                 WithdrawData storage withdrawData = withdrawDataMap[graphId];
                 PeginData storage peginData = peginDataMap[instanceId];
                 if (
+                    operatorDataMap[graphId].operatorPubkey == operatorPubkey &&
                     (withdrawData.status == WithdrawStatus.None ||
                         withdrawData.status == WithdrawStatus.Canceled) &&
                     peginData.status == PeginStatus.Withdrawbale &&
@@ -186,6 +189,7 @@ contract GatewayUpgradeable {
                 WithdrawData storage withdrawData = withdrawDataMap[graphId];
                 PeginData storage peginData = peginDataMap[instanceId];
                 if (
+                    operatorDataMap[graphId].operatorPubkey == operatorPubkey &&
                     (withdrawData.status == WithdrawStatus.None ||
                         withdrawData.status == WithdrawStatus.Canceled) &&
                     peginData.status == PeginStatus.Withdrawbale &&
